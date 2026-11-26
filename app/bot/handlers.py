@@ -19,7 +19,7 @@ HELP = (
 
 @router.message(CommandStart())
 async def start(m: Message):
-    await m.answer("Привет! " + HELP)
+    await m.answer("Привет! " + HELP + f"\n\nВаш ID: <code>{m.from_user.id}</code>")
 
 
 @router.message(Command("help"))

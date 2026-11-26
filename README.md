@@ -25,16 +25,20 @@ Telegram ──► bot (aiogram, polling) ──► Redis-очередь (arq) �
 
 ## Запуск на сервере
 
-1. Арендуйте VPS **вне РФ**: 2 vCPU / 4 GB, Ubuntu 24.04 (Hetzner CX22, ~€5/мес, или аналог). Поставьте Docker:
-   `curl -fsSL https://get.docker.com | sh`.
-2. Создайте бота у @BotFather и узнайте свой ID у @userinfobot.
-3. На своём компьютере выполните `claude setup-token`. Полученный токен пойдёт в `CLAUDE_CODE_OAUTH_TOKEN`.
-4. Подготовьте окружение и запустите:
-   ```bash
-   cp .env.example .env   # заполнить
-   docker compose up -d --build
-   docker compose logs -f worker
-   ```
+На чистом сервере Ubuntu 24.04 выполните:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/djon89/infobot/main/install.sh | sudo bash
+```
+
+Установщик сам:
+- поставит Docker;
+- спросит токен бота;
+- определит ваш Telegram ID — для этого нужно нажать «Старт» у бота;
+- подключит подписку Claude;
+- запустит бота.
+
+Повторный запуск той же команды обновляет бота до последней версии.
 
 ## Блокировки YouTube
 

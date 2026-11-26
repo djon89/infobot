@@ -43,7 +43,7 @@ async def process_youtube(ctx, *, job_id: int, user_id: int, chat_id: int, video
             transcript = repo.video_transcript(video)
             meta = VideoMeta(video_id, video.title, video.author) if video else None
         if transcript is None:
-            meta = await fetch_meta(video_id, s.generic_proxy_url)
+            meta = await fetch_meta(video_id, s.generic_proxy_url or None)
             transcript = await ctx["transcripts"].get(video_id)
             async with sm() as db:
                 await repo.save_transcript(db, meta, transcript)
