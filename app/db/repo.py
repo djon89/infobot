@@ -17,6 +17,7 @@ async def upsert_user(s: AsyncSession, tg_user) -> User:
     u.username = tg_user.username
     u.first_name = tg_user.first_name
     u.language_code = tg_user.language_code
+    await s.flush()  # пользователь должен попасть в БД раньше его задач (внешний ключ)
     return u
 
 

@@ -25,7 +25,9 @@ class FakeLLM:
 
 @pytest.fixture
 async def ctx(monkeypatch):
+    from sqlalchemy import event
     engine = make_engine("sqlite+aiosqlite:///:memory:")
+    event.listen(engine.sync_engine, "connect", lambda c, _: c.execute("PRAGMA foreign_keys=ON"))
     await init_db(engine)
     sm = make_sessionmaker(engine)
     async with sm() as s:
