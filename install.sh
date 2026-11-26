@@ -13,10 +13,22 @@ ask()  { local v; read -r -p "$1" v < /dev/tty; echo "$v"; }
 
 [ "$(id -u)" -eq 0 ] || die "запустите от root (через sudo)"
 
-say "1/6 Ставлю Docker и git (пара минут)…"
+say "Установка началась. Это займёт 5–10 минут — ничего не нажимайте, пока я не спрошу."
+say "1/6 Ставлю Docker и git…"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq git curl python3 >/dev/null
-command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh >/dev/null
+APT_OPTS=(-o DPkg::Lock::Timeout=600)
+if fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1; then
+  warn "Сервер сам ставит системные обновления — жду, пока закончит (обычно 1–5 минут)…"
+fi
+apt-get "${APT_OPTS[@]}" update 2>&1 | grep -E "^(Hit|Get|Err)" | tail -n 3 || true
+apt-get "${APT_OPTS[@]}" install -y git curl python3 2>&1 | grep -E "^(Setting up|E:)" || true
+if ! command -v docker >/dev/null; then
+  say "   Ставлю Docker (2–3 минуты)…"
+  curl -fsSL https://get.docker.com | sh 2>&1 | grep -E "^(\+ sh -c|ERROR)" | tail -n 5 || true
+fi
+command -v docker >/dev/null || die "Docker не установился — пришлите этот вывод"
+command -v git >/dev/null || die "git не установился — пришлите этот вывод"
+say "   Docker и git готовы ✓"
 
 say "2/6 Скачиваю код бота…"
 if [ -d "$DIR/.git" ]; then git -C "$DIR" pull -q; else git clone -q "$REPO_URL" "$DIR"; fi
@@ -74,7 +86,8 @@ PY
 fi
 
 say "Собираю бота (3–5 минут)…"
-docker compose build -q
+docker compose build --progress=plain 2>&1 | grep -E "^#[0-9]+ \\[.*\\] (FROM|RUN|COPY)|ERROR|error" || true
+docker image inspect infobot-worker >/dev/null 2>&1 || die "сборка не удалась — пришлите этот вывод"
 
 if ! grep -qE '^CLAUDE_CODE_OAUTH_TOKEN=.+' .env; then
   say "6/6 Подключаю вашу подписку Claude"
