@@ -1,0 +1,30 @@
+services:
+  bot:
+    build: .
+    command: python -m app.bot.main
+    env_file: .env
+    restart: unless-stopped
+    depends_on: [postgres, redis]
+
+  worker:
+    build: .
+    command: arq app.worker.main.WorkerSettings
+    env_file: .env
+    restart: unless-stopped
+    depends_on: [postgres, redis]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: bot
+    volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  pgdata:
