@@ -26,8 +26,10 @@ async def main():
     dp.message.middleware(AccessMiddleware(s))
     dp.callback_query.middleware(AccessMiddleware(s))
     dp.include_router(router)
-    await bot.set_my_commands([BotCommand(command="start", description="Начать"),
-                               BotCommand(command="settings", description="Настройки скачивания"),
+    await bot.set_my_commands([BotCommand(command="digest", description="Что нового на каналах"),
+                               BotCommand(command="channels", description="За кем я слежу"),
+                               BotCommand(command="import", description="Импорт подписок YouTube"),
+                               BotCommand(command="settings", description="Настройки"),
                                BotCommand(command="help", description="Что умеет бот")])
     await dp.start_polling(bot)
 

@@ -63,3 +63,15 @@ async def test_quality_too_big_refused(env):
     await handlers.quality_cb(c, env["settings"], env["sessionmaker"], env["arq"])
     assert c.answer.await_args.kwargs.get("show_alert")
     env["arq"].enqueue_job.assert_not_awaited()
+
+
+async def test_digest_hour_setting(env):
+    c = cb("set:h:21")
+    await handlers.settings_cb(c, env["settings"], env["sessionmaker"])
+    assert "в <b>21:00</b>" in c.message.edit_text.await_args.args[0]
+    c = cb("set:h:off")
+    await handlers.settings_cb(c, env["settings"], env["sessionmaker"])
+    assert "выключена" in c.message.edit_text.await_args.args[0]
+    c = cb("set:h:25")
+    await handlers.settings_cb(c, env["settings"], env["sessionmaker"])
+    c.message.edit_text.assert_not_awaited()

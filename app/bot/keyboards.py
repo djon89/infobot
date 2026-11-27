@@ -14,10 +14,11 @@ def video_actions(video_id: str, quality: str, audio: str) -> InlineKeyboardMark
     label = QUALITY_LABELS.get(quality, quality)
     if quality != "audio" and audio != "orig":
         label += f", {AUDIO_DEFAULTS.get(audio, audio)}"
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        B(text=f"⬇️ Скачать ({label})", callback_data=f"dl:{video_id}:d:d"),
-        B(text="🎚 Выбрать качество", callback_data=f"pick:{video_id}"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [B(text=f"⬇️ Скачать ({label})", callback_data=f"dl:{video_id}:d:d"),
+         B(text="🎚 Выбрать качество", callback_data=f"pick:{video_id}")],
+        [B(text="➕ Следить за каналом", callback_data=f"fv:{video_id}")],
+    ])
 
 
 def quality_picker(video_id: str, sizes: dict[str, int], limit: int) -> InlineKeyboardMarkup:
@@ -44,17 +45,24 @@ def audio_picker(video_id: str, quality: str, tracks: list[AudioTrack]) -> Inlin
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def settings_kb(quality: str, audio: str) -> InlineKeyboardMarkup:
+DIGEST_HOURS = [7, 9, 12, 18, 21]
+
+
+def settings_kb(quality: str, audio: str, hour: int | None = None) -> InlineKeyboardMarkup:
     def mark(cur, val, text):
         return ("✅ " if cur == val else "") + text
     qs = [B(text=mark(quality, q, QUALITY_LABELS[q]), callback_data=f"set:q:{q}") for q in QUALITY_LABELS]
     au = [B(text=mark(audio, a, t), callback_data=f"set:a:{a}") for a, t in AUDIO_DEFAULTS.items()]
-    return InlineKeyboardMarkup(inline_keyboard=[qs[:3], qs[3:], au])
+    hs = [B(text=mark(hour, h, f"{h:02d}:00"), callback_data=f"set:h:{h}") for h in DIGEST_HOURS]
+    hs.append(B(text=mark(hour, None, "Выкл"), callback_data="set:h:off"))
+    return InlineKeyboardMarkup(inline_keyboard=[qs[:3], qs[3:], au, hs[:3], hs[3:]])
 
 
-def settings_text(quality: str, audio: str) -> str:
-    return ("⚙️ <b>Настройки скачивания по умолчанию</b>\n\n"
-            f"Качество: <b>{QUALITY_LABELS.get(quality, quality)}</b>\n"
-            f"Аудиодорожка: <b>{AUDIO_DEFAULTS.get(audio, audio)}</b>\n\n"
-            "Их использует кнопка «⬇️ Скачать». Для разового выбора есть «🎚 Выбрать качество». "
-            "Если нужной дорожки в видео нет, будет оригинальная.")
+def settings_text(quality: str, audio: str, hour: int | None = None, tz: str = "Europe/Moscow") -> str:
+    digest = f"каждый день в <b>{hour:02d}:00</b> ({tz})" if hour is not None else "<b>выключена</b>"
+    return ("⚙️ <b>Настройки</b>\n\n"
+            f"⬇️ Качество по умолчанию: <b>{QUALITY_LABELS.get(quality, quality)}</b>\n"
+            f"🎧 Аудиодорожка: <b>{AUDIO_DEFAULTS.get(audio, audio)}</b>\n"
+            f"📬 Сводка новых видео: {digest}\n\n"
+            "Качество и дорожку использует кнопка «⬇️ Скачать»; разовый выбор — «🎚 Выбрать качество». "
+            "Если нужной дорожки в видео нет, будет оригинальная. Сводку можно запросить в любой момент — /digest.")

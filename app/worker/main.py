@@ -1,17 +1,19 @@
 import logging
 
-from arq import func
+from arq import cron, func
 from arq.connections import RedisSettings
 
 from app.config import get_settings
 from app.db.session import init_db, make_engine, make_sessionmaker
 from app.services.downloader import Downloader
+from app.services.feeds import FeedClient
 from app.services.llm.factory import LLMRouter
 from app.services.transcript.chain import TranscriptChain
 from app.services.transcript.yta import YTATranscriptProvider
 
 from app.telegram_client import make_bot
 
+from .subs_tasks import follow_channel, import_youtube, make_digest, poll_feeds, send_due_digests, sync_youtube_subs
 from .tasks import download_video, probe_video, process_youtube
 
 settings = get_settings()
@@ -30,6 +32,7 @@ async def startup(ctx):
         settings.ytdlp_proxy or settings.generic_proxy_url or None,
     )
     ctx["downloader"].cleanup(0)  # остатки после перезапуска
+    ctx["feeds"] = FeedClient(settings.generic_proxy_url or None)
     ctx["llm"] = LLMRouter(settings)
     ctx["transcripts"] = TranscriptChain([
         YTATranscriptProvider(
@@ -47,7 +50,14 @@ async def shutdown(ctx):
 
 
 class WorkerSettings:
-    functions = [process_youtube, func(probe_video, timeout=120), func(download_video, timeout=3600)]
+    functions = [process_youtube, func(probe_video, timeout=120), func(download_video, timeout=3600),
+                 func(follow_channel, timeout=120), func(make_digest, timeout=600),
+                 func(import_youtube, timeout=2400)]
+    cron_jobs = [
+        cron(poll_feeds, minute={0, 30}, timeout=1200),     # проверка каналов дважды в час
+        cron(send_due_digests, minute={10}, timeout=1800),  # ежедневные сводки в выбранный час
+        cron(sync_youtube_subs, hour={4}, minute={20}, timeout=1800),
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

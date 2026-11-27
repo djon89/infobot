@@ -67,3 +67,52 @@ class VideoFile(Base):
     file_id: Mapped[str] = mapped_column(Text)
     size: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Channel(Base):
+    __tablename__ = "channels"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)  # UC...
+    title: Mapped[str] = mapped_column(Text)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class UserChannel(Base):
+    __tablename__ = "user_channels"
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    channel_id: Mapped[str] = mapped_column(String(32), ForeignKey("channels.id"), primary_key=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual | youtube
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FeedVideo(Base):
+    __tablename__ = "feed_videos"
+    video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    channel_id: Mapped[str] = mapped_column(String(32), ForeignKey("channels.id"), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DigestSettings(Base):
+    __tablename__ = "digest_settings"
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    hour: Mapped[int | None] = mapped_column(Integer)  # None = ежедневная сводка выключена
+    tz: Mapped[str] = mapped_column(String(64))
+    cursor: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # до какого момента уже показано
+    last_sent_on: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD по местному времени
+
+
+class Digest(Base):
+    __tablename__ = "digests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
+    video_ids: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GoogleAccount(Base):
+    __tablename__ = "google_accounts"
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    refresh_token: Mapped[str] = mapped_column(Text)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

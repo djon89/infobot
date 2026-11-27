@@ -8,7 +8,7 @@ LLMProviderName = Literal["anthropic", "claude_cli"]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     # Telegram
     bot_token: str
@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return (2000 if self.telegram_api_url else 50) * 1024 * 1024
+
+    # Сводка новых видео с каналов
+    default_tz: str = "Europe/Moscow"
+    default_digest_hour: int | None = 9
+
+    # Импорт подписок YouTube (OAuth-клиент Google типа «TVs and Limited Input devices»)
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
 
     # Infra
     database_url: str = "postgresql+asyncpg://bot:bot@postgres:5432/bot"

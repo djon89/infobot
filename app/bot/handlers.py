@@ -7,8 +7,12 @@ from arq.connections import ArqRedis
 
 from app.bot import keyboards as kb
 from app.config import Settings
+from app import digest as dg
 from app.db import repo
+from app.db import subs_repo as sr
+from app.db.models import Digest
 from app.services.downloader import AUDIO_DEFAULTS, QUALITY_LABELS
+from app.services.feeds import extract_channel_ref
 from app.services.youtube import extract_video_ids
 
 router = Router()
@@ -18,8 +22,12 @@ HELP = (
     "• 📝 конспект с ключевыми мыслями;\n"
     "• 📄 полную расшифровку файлом;\n"
     "• ⬇️ кнопку, чтобы скачать само видео или звук.\n\n"
-    "/settings — качество и аудиодорожка по умолчанию.\n"
-    "Скоро: статьи и голосовые сообщения."
+    "Пришлите ссылку на канал — буду следить за новыми видео (без Shorts) "
+    "и раз в день присылать одну сводку.\n\n"
+    "/digest — что нового на каналах прямо сейчас\n"
+    "/channels — за кем я слежу\n"
+    "/import — взять каналы из подписок вашего YouTube\n"
+    "/settings — качество, аудиодорожка, время сводки"
 )
 
 
@@ -41,27 +49,42 @@ async def _quota_ok(s, settings: Settings, user_id: int, n: int = 1) -> bool:
 
 # ---------- настройки ----------
 
+async def _settings_view(s, settings: Settings, user_id: int):
+    us = await repo.get_user_settings(s, user_id, settings.default_quality, settings.default_audio)
+    ds = await sr.get_digest_settings(s, user_id, settings.default_tz, settings.default_digest_hour)
+    return (kb.settings_text(us.quality, us.audio, ds.hour, ds.tz),
+            kb.settings_kb(us.quality, us.audio, ds.hour))
+
+
 @router.message(Command("settings"))
 async def settings_cmd(m: Message, settings: Settings, sessionmaker):
     async with sessionmaker() as s:
         await repo.upsert_user(s, m.from_user)
-        us = await repo.get_user_settings(s, m.from_user.id, settings.default_quality, settings.default_audio)
+        text, markup = await _settings_view(s, settings, m.from_user.id)
         await s.commit()
-    await m.answer(kb.settings_text(us.quality, us.audio), reply_markup=kb.settings_kb(us.quality, us.audio))
+    await m.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("set:"))
 async def settings_cb(c: CallbackQuery, settings: Settings, sessionmaker):
     _, what, val = c.data.split(":", 2)
-    if (what == "q" and val not in QUALITY_LABELS) or (what == "a" and val not in AUDIO_DEFAULTS):
+    valid = {"q": QUALITY_LABELS, "a": AUDIO_DEFAULTS,
+             "h": {str(h) for h in kb.DIGEST_HOURS} | {"off"}}
+    if what not in valid or val not in valid[what]:
         await c.answer()
         return
     async with sessionmaker() as s:
         await repo.upsert_user(s, c.from_user)
-        us = await repo.set_user_setting(s, c.from_user.id, settings.default_quality, settings.default_audio,
-                                         quality=val if what == "q" else None, audio=val if what == "a" else None)
+        if what in ("q", "a"):
+            await repo.set_user_setting(s, c.from_user.id, settings.default_quality, settings.default_audio,
+                                        quality=val if what == "q" else None, audio=val if what == "a" else None)
+        else:
+            ds = await sr.get_digest_settings(s, c.from_user.id, settings.default_tz, settings.default_digest_hour)
+            ds.hour = None if val == "off" else int(val)
+        await s.flush()
+        text, markup = await _settings_view(s, settings, c.from_user.id)
         await s.commit()
-    await c.message.edit_text(kb.settings_text(us.quality, us.audio), reply_markup=kb.settings_kb(us.quality, us.audio))
+    await c.message.edit_text(text, reply_markup=markup)
     await c.answer("Сохранено")
 
 
@@ -124,13 +147,125 @@ async def quality_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: Ar
     await _enqueue_download(c, settings, sessionmaker, arq, vid, quality, "orig")
 
 
+# ---------- каналы и сводки ----------
+
+@router.callback_query(F.data == "noop")
+async def noop_cb(c: CallbackQuery):
+    await c.answer()
+
+
+async def _start_follow(m_or_c, arq: ArqRedis, sessionmaker, user, chat_id: int, **kw):
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, user)
+        await s.commit()
+    target = m_or_c.message if isinstance(m_or_c, CallbackQuery) else m_or_c
+    status = await target.answer("🔎 Ищу канал…")
+    await arq.enqueue_job("follow_channel", user_id=user.id, chat_id=chat_id,
+                          status_message_id=status.message_id, **kw)
+
+
+@router.callback_query(F.data.startswith("fv:"))
+async def follow_from_video_cb(c: CallbackQuery, sessionmaker, arq: ArqRedis):
+    await c.answer()
+    await _start_follow(c, arq, sessionmaker, c.from_user, c.message.chat.id, video_id=c.data.split(":", 1)[1])
+
+
+@router.message(Command("follow"))
+async def follow_cmd(m: Message, sessionmaker, arq: ArqRedis):
+    ref = extract_channel_ref(m.text or "")
+    if not ref:
+        await m.answer("Пришлите ссылку на канал, например: <code>/follow https://www.youtube.com/@channel</code>")
+        return
+    await _start_follow(m, arq, sessionmaker, m.from_user, m.chat.id, channel_url=ref)
+
+
+@router.message(Command("channels"))
+async def channels_cmd(m: Message, sessionmaker):
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, m.from_user)
+        chans = await sr.user_channels(s, m.from_user.id)
+        await s.commit()
+    text, markup = dg.render_channels(chans, 0)
+    await m.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("chp:") | F.data.startswith("uf:"))
+async def channels_page_cb(c: CallbackQuery, sessionmaker):
+    parts = c.data.split(":")
+    async with sessionmaker() as s:
+        if parts[0] == "uf":
+            await sr.unfollow(s, c.from_user.id, parts[1])
+            await s.commit()
+        chans = await sr.user_channels(s, c.from_user.id)
+    page = int(parts[-1]) if parts[-1].lstrip("-").isdigit() else 0
+    text, markup = dg.render_channels(chans, page)
+    await c.message.edit_text(text, reply_markup=markup)
+    await c.answer("Отписался" if parts[0] == "uf" else None)
+
+
+@router.message(Command("digest"))
+async def digest_cmd(m: Message, sessionmaker, arq: ArqRedis):
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, m.from_user)
+        await s.commit()
+    status = await m.answer("🔎 Проверяю каналы…")
+    await arq.enqueue_job("make_digest", user_id=m.from_user.id, chat_id=m.chat.id, manual=True,
+                          status_message_id=status.message_id)
+
+
+@router.callback_query(F.data.startswith("dg:"))
+async def digest_page_cb(c: CallbackQuery, sessionmaker):
+    _, did, page = c.data.split(":")
+    async with sessionmaker() as s:
+        d = await s.get(Digest, int(did))
+        if not d or d.user_id != c.from_user.id:
+            await c.answer("Сводка устарела", show_alert=True)
+            return
+        items = await sr.digest_items(s, d)
+    text, markup = dg.render(items, int(page), d.id)
+    await c.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("s:"))
+async def summary_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: ArqRedis):
+    vid = c.data.split(":", 1)[1]
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, c.from_user)
+        if not await _quota_ok(s, settings, c.from_user.id):
+            await s.commit()
+            await c.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа.", show_alert=True)
+            return
+        job = await repo.create_job(s, c.from_user.id, vid)
+        await s.commit()
+    await c.answer("Делаю конспект…")
+    status = await c.message.answer(f"⏳ Конспект: https://youtu.be/{vid}", disable_web_page_preview=True)
+    await arq.enqueue_job("process_youtube", job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
+                          video_id=vid, status_message_id=status.message_id, reply_to=status.message_id)
+
+
+@router.message(Command("import"))
+async def import_cmd(m: Message, sessionmaker, arq: ArqRedis):
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, m.from_user)
+        await s.commit()
+    status = await m.answer("⏳ Запрашиваю код у Google…")
+    await arq.enqueue_job("import_youtube", user_id=m.from_user.id, chat_id=m.chat.id,
+                          status_message_id=status.message_id)
+
+
 # ---------- ссылки (последним: ловит любой текст) ----------
 
 @router.message(F.text | F.caption)
 async def on_text(m: Message, settings: Settings, sessionmaker, arq: ArqRedis):
-    ids = extract_video_ids(m.text or m.caption or "")
+    text = m.text or m.caption or ""
+    ids = extract_video_ids(text)
     if not ids:
-        await m.answer("Пока я понимаю только ссылки на YouTube. " + HELP)
+        ref = extract_channel_ref(text)
+        if ref:
+            await _start_follow(m, arq, sessionmaker, m.from_user, m.chat.id, channel_url=ref)
+            return
+        await m.answer("Не нашёл ссылку на YouTube. " + HELP)
         return
     ids = ids[:3]  # не больше трёх видео за одно сообщение
     user = m.from_user
