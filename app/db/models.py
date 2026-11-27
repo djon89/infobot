@@ -116,3 +116,27 @@ class GoogleAccount(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
     refresh_token: Mapped[str] = mapped_column(Text)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SectionDeepDive(Base):
+    """Кэш подробных разборов частей видео."""
+    __tablename__ = "section_deep_dives"
+    video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DownloadLog(Base):
+    """Журнал скачиваний для /stats: объём, через прокси или напрямую, блокировки."""
+    __tablename__ = "download_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    video_id: Mapped[str] = mapped_column(String(16))
+    quality: Mapped[str] = mapped_column(String(16))
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached: Mapped[bool] = mapped_column(Boolean, default=False)      # отправлено по file_id без скачивания
+    via_proxy: Mapped[bool] = mapped_column(Boolean, default=False)
+    direct_blocked: Mapped[bool] = mapped_column(Boolean, default=False)  # напрямую YouTube отказал
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

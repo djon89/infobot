@@ -75,3 +75,31 @@ async def test_digest_hour_setting(env):
     c = cb("set:h:25")
     await handlers.settings_cb(c, env["settings"], env["sessionmaker"])
     c.message.edit_text.assert_not_awaited()
+
+
+async def test_short_and_sections_and_stats(env):
+    from app.db.models import Video
+    from tests.fixtures_summary import SUMMARY
+    async with env["sessionmaker"]() as s:
+        s.add(Video(id="dQw4w9WgXcQ", title="Тест", summary=json.dumps(SUMMARY, ensure_ascii=False)))
+        await s.commit()
+    c = cb("sh:dQw4w9WgXcQ")
+    c.bot = AsyncMock()
+    await handlers.short_cb(c, env["sessionmaker"])
+    blocks = c.bot.send_rich_message.await_args.kwargs["rich_message"].blocks
+    assert blocks[0].text.startswith("⚡") and len(blocks[3].items) == 3   # только 3 тезиса
+
+    c = cb("dp:dQw4w9WgXcQ")
+    await handlers.sections_cb(c, env["sessionmaker"])
+    kbd = c.message.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    assert [r[0].callback_data for r in kbd] == ["dd:dQw4w9WgXcQ:0", "dd:dQw4w9WgXcQ:1"]
+
+    await handlers.deep_cb(cb("dd:dQw4w9WgXcQ:1"), env["settings"], env["sessionmaker"], env["arq"])
+    assert env["arq"].enqueue_job.await_args.kwargs["idx"] == 1
+
+    m = MagicMock(from_user=MagicMock(id=1), answer=AsyncMock())
+    await handlers.stats_cmd(m, env["settings"], env["sessionmaker"])
+    assert "Статистика бота" in m.answer.await_args.args[0]
+    m2 = MagicMock(from_user=MagicMock(id=2), answer=AsyncMock())
+    await handlers.stats_cmd(m2, env["settings"], env["sessionmaker"])
+    assert "только владельцу" in m2.answer.await_args.args[0]

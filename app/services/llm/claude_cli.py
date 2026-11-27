@@ -19,6 +19,23 @@ class ClaudeCliProvider:
         self._binary = binary
 
     async def complete(self, system: str, prompt: str) -> str:
+        data = await self._run(system, prompt)
+        text = (data.get("result") or "").strip()
+        if not text:
+            raise LLMError("Claude Code вернул пустой ответ.")
+        return text
+
+    async def complete_json(self, system: str, prompt: str, schema: dict) -> dict:
+        data = await self._run(system, prompt, ["--json-schema", json.dumps(schema, ensure_ascii=False)])
+        out = data.get("structured_output")
+        if not isinstance(out, dict):
+            try:
+                out = json.loads(data.get("result") or "")
+            except json.JSONDecodeError as e:
+                raise LLMError("Claude Code вернул ответ не по схеме.") from e
+        return out
+
+    async def _run(self, system: str, prompt: str, extra: list[str] | None = None) -> dict:
         args = [
             self._binary, "-p",
             "--output-format", "json",
@@ -28,6 +45,7 @@ class ClaudeCliProvider:
             "--strict-mcp-config",
             "--setting-sources", "",
             "--no-session-persistence",
+            *(extra or []),
         ]
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -48,7 +66,4 @@ class ClaudeCliProvider:
             raise LLMError("Не удалось разобрать ответ Claude Code.") from e
         if data.get("is_error"):
             raise LLMError(f"Claude Code: {data.get('result') or data.get('subtype')}")
-        text = (data.get("result") or "").strip()
-        if not text:
-            raise LLMError("Claude Code вернул пустой ответ.")
-        return text
+        return data

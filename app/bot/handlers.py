@@ -1,3 +1,4 @@
+import html
 import json
 
 from aiogram import F, Router
@@ -10,7 +11,12 @@ from app.config import Settings
 from app import digest as dg
 from app.db import repo
 from app.db import subs_repo as sr
-from app.db.models import Digest
+from app import render
+from app.db.models import Digest, Video
+from app.services.summarizer import load_summary
+from app.services.youtube import VideoMeta
+from app.stats import build_stats
+from app.telegram_send import send_article
 from app.services.downloader import AUDIO_DEFAULTS, QUALITY_LABELS
 from app.services.feeds import extract_channel_ref
 from app.services.youtube import extract_video_ids
@@ -252,6 +258,65 @@ async def import_cmd(m: Message, sessionmaker, arq: ArqRedis):
     status = await m.answer("⏳ Запрашиваю код у Google…")
     await arq.enqueue_job("import_youtube", user_id=m.from_user.id, chat_id=m.chat.id,
                           status_message_id=status.message_id)
+
+
+# ---------- конспект: коротко / подробно о части ----------
+
+async def _load_summary(sessionmaker, vid: str):
+    async with sessionmaker() as s:
+        v = await s.get(Video, vid)
+    d = load_summary(v.summary if v else None)
+    return (VideoMeta(vid, v.title, v.author), d) if d else (None, None)
+
+
+@router.callback_query(F.data.startswith("sh:"))
+async def short_cb(c: CallbackQuery, sessionmaker):
+    vid = c.data.split(":", 1)[1]
+    meta, d = await _load_summary(sessionmaker, vid)
+    if not d:
+        await c.answer("Конспект устарел — пришлите ссылку ещё раз.", show_alert=True)
+        return
+    await c.answer()
+    await send_article(c.bot, c.message.chat.id, render.short_blocks(meta, d), render.short_html(meta, d),
+                       reply_to=c.message.message_id)
+
+
+@router.callback_query(F.data.startswith("dp:"))
+async def sections_cb(c: CallbackQuery, sessionmaker):
+    vid = c.data.split(":", 1)[1]
+    meta, d = await _load_summary(sessionmaker, vid)
+    if not d:
+        await c.answer("Конспект устарел — пришлите ссылку ещё раз.", show_alert=True)
+        return
+    await c.answer()
+    await c.message.answer(f"🔍 Какую часть «{html.escape(meta.title)}» разобрать подробно?",
+                           reply_markup=kb.sections_picker(vid, d["sections"]))
+
+
+@router.callback_query(F.data.startswith("dd:"))
+async def deep_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: ArqRedis):
+    _, vid, idx = c.data.split(":")
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, c.from_user)
+        if not await _quota_ok(s, settings, c.from_user.id):
+            await s.commit()
+            await c.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа.", show_alert=True)
+            return
+        job = await repo.create_job(s, c.from_user.id, f"{vid}:{idx}", kind="deep_dive")
+        await s.commit()
+    await c.answer("Разбираю…")
+    status = await c.message.answer("⏳ Подробный разбор в очереди…")
+    await arq.enqueue_job("deep_dive", job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
+                          video_id=vid, idx=int(idx), status_message_id=status.message_id)
+
+
+@router.message(Command("stats"))
+async def stats_cmd(m: Message, settings: Settings, sessionmaker):
+    if m.from_user.id not in settings.owner_ids:
+        await m.answer("Статистика доступна только владельцу бота.")
+        return
+    async with sessionmaker() as s:
+        await m.answer(await build_stats(s))
 
 
 # ---------- ссылки (последним: ловит любой текст) ----------

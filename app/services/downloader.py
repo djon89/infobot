@@ -22,6 +22,11 @@ AUDIO_DEFAULTS = {"orig": "Оригинал", "ru": "Русская", "en": "А�
 
 class DownloadError(Exception):
     """Ошибка, которую можно показать пользователю."""
+    direct_blocked: bool = False
+
+
+class Blocked(DownloadError):
+    pass
 
 
 @dataclass
@@ -49,6 +54,8 @@ class DownloadedFile:
     width: int | None
     height: int | None
     size: int
+    via_proxy: bool = False
+    direct_blocked: bool = False
 
 
 def format_selector(quality: str, audio: str) -> str:
@@ -137,24 +144,30 @@ class Downloader:
         return o
 
     def _with_fallback(self, fn):
-        """Сначала напрямую (быстро и бесплатно), при отказе YouTube — через прокси."""
+        """Сначала напрямую (быстро и бесплатно), при отказе YouTube — через прокси.
+        Возвращает (результат, через_прокси, напрямую_заблокировано)."""
         try:
-            return fn(False)
+            return fn(False), False, False
         except yt_dlp.utils.DownloadError as e:
+            err = _user_error(e)
+            blocked = isinstance(err, Blocked)
             if not self.proxy:
-                raise _user_error(e) from e
+                err.direct_blocked = blocked
+                raise err from e
             log.warning("direct yt-dlp failed (%s), retrying via proxy", e)
             try:
-                return fn(True)
+                return fn(True), True, blocked
             except yt_dlp.utils.DownloadError as e2:
-                raise _user_error(e2) from e2
+                err2 = _user_error(e2)
+                err2.direct_blocked = blocked
+                raise err2 from e2
 
     # --- probe ---
     def _probe_sync(self, video_id: str) -> ProbeResult:
         def run(use_proxy):
             with yt_dlp.YoutubeDL(self._opts(use_proxy)) as ydl:
                 return ydl.extract_info(_url(video_id), download=False)
-        return summarize_formats(self._with_fallback(run))
+        return summarize_formats(self._with_fallback(run)[0])
 
     async def probe(self, video_id: str) -> ProbeResult:
         return await asyncio.to_thread(self._probe_sync, video_id)
@@ -190,7 +203,9 @@ class Downloader:
                 raise TooBig(size)
             return DownloadedFile(path, quality == "audio", info.get("title") or video_id,
                                   int(info.get("duration") or 0), info.get("width"), info.get("height"), size)
-        return self._with_fallback(run)
+        f, via_proxy, blocked = self._with_fallback(run)
+        f.via_proxy, f.direct_blocked = via_proxy, blocked
+        return f
 
     async def download(self, video_id: str, quality: str, audio: str,
                        on_progress: Callable[[int, int], None] | None = None) -> DownloadedFile:
@@ -220,7 +235,7 @@ def _url(video_id: str) -> str:
 def _user_error(e: Exception) -> DownloadError:
     msg = str(e)
     if "Sign in to confirm" in msg or "bot" in msg.lower() or "403" in msg:
-        return DownloadError("YouTube заблокировал скачивание с сервера. Нужен прокси.")
+        return Blocked("YouTube заблокировал скачивание с сервера. Нужен прокси.")
     if "Private video" in msg or "unavailable" in msg.lower():
         return DownloadError("Видео недоступно (удалено или приватное).")
     if "age" in msg.lower() and "confirm" in msg.lower():

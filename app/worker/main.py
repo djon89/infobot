@@ -14,7 +14,7 @@ from app.services.transcript.yta import YTATranscriptProvider
 from app.telegram_client import make_bot
 
 from .subs_tasks import follow_channel, import_youtube, make_digest, poll_feeds, send_due_digests, sync_youtube_subs
-from .tasks import download_video, probe_video, process_youtube
+from .tasks import deep_dive, download_video, probe_video, process_youtube
 
 settings = get_settings()
 
@@ -52,7 +52,7 @@ async def shutdown(ctx):
 class WorkerSettings:
     functions = [process_youtube, func(probe_video, timeout=120), func(download_video, timeout=3600),
                  func(follow_channel, timeout=120), func(make_digest, timeout=600),
-                 func(import_youtube, timeout=2400)]
+                 func(import_youtube, timeout=2400), func(deep_dive, timeout=900)]
     cron_jobs = [
         cron(poll_feeds, minute={0, 30}, timeout=1200),     # проверка каналов дважды в час
         cron(send_due_digests, minute={10}, timeout=1800),  # ежедневные сводки в выбранный час

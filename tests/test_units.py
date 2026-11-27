@@ -74,3 +74,30 @@ async def test_claude_cli_error(tmp_path):
     prov = ClaudeCliProvider(binary=_fake_claude(tmp_path, {"is_error": True, "result": "limit"}))
     with pytest.raises(LLMError):
         await prov.complete("sys", "текст")
+
+
+def test_summary_clean_and_load():
+    import copy
+    import json
+    from app.services.summarizer import _clean, load_summary
+    from tests.fixtures_summary import SUMMARY
+    d = copy.deepcopy(SUMMARY)
+    d["key_points"][0]["t"] = 99999          # таймкод за пределами видео
+    d["sections"].reverse()                  # перепутанный порядок
+    d["table"] = {"caption": "x", "columns": [], "rows": []}
+    out = _clean(d, 600)
+    assert out["key_points"][0]["t"] is None
+    assert [s["start"] for s in out["sections"]] == [0, 240]
+    assert out["table"] is None
+    assert load_summary(json.dumps(out)) == out
+    assert load_summary("**markdown**") is None and load_summary(json.dumps({"v": 1})) is None
+
+
+def test_html_fallback_and_markdown_escape():
+    from app import render
+    from app.services.youtube import VideoMeta
+    from tests.fixtures_summary import SUMMARY
+    meta = VideoMeta("dQw4w9WgXcQ", "A <b> & B", None)
+    h = render.summary_html(meta, SUMMARY)
+    assert "A &lt;b&gt; &amp; B" in h and "▶ 01:15" in h
+    assert render.ts(3725) == "1:02:05"

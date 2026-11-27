@@ -66,3 +66,20 @@ def settings_text(quality: str, audio: str, hour: int | None = None, tz: str = "
             f"📬 Сводка новых видео: {digest}\n\n"
             "Качество и дорожку использует кнопка «⬇️ Скачать»; разовый выбор — «🎚 Выбрать качество». "
             "Если нужной дорожки в видео нет, будет оригинальная. Сводку можно запросить в любой момент — /digest.")
+
+
+
+def summary_actions(video_id: str, quality: str, audio: str) -> InlineKeyboardMarkup:
+    dl = video_actions(video_id, quality, audio).inline_keyboard
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [B(text="⚡ Коротко", callback_data=f"sh:{video_id}"),
+         B(text="🔍 Подробнее о части", callback_data=f"dp:{video_id}")],
+        *dl,
+    ])
+
+
+def sections_picker(video_id: str, sections: list[dict]) -> InlineKeyboardMarkup:
+    from app.render import ts
+    rows = [[B(text=f"🔍 {i + 1}. {s['title'][:40]} · {ts(s['start'])}", callback_data=f"dd:{video_id}:{i}")]
+            for i, s in enumerate(sections[:20])]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
