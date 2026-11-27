@@ -27,12 +27,12 @@ async def process_youtube(ctx, *, job_id: int, user_id: int, chat_id: int, video
     bot: Bot = ctx["bot"]
     sm = ctx["sessionmaker"]
     s = ctx["settings"]
-    llm = ctx["llm"].for_user(user_id)
+    llm_name = None
 
     async def fail(text: str, err: str):
         await _status(bot, chat_id, status_message_id, f"❌ {text}")
         async with sm() as db:
-            await repo.finish_job(db, job_id, False, llm.name, err)
+            await repo.finish_job(db, job_id, False, llm_name, err)
             await db.commit()
 
     try:
@@ -65,6 +65,8 @@ async def process_youtube(ctx, *, job_id: int, user_id: int, chat_id: int, video
             video = await db.get(Video, video_id)
             summary = video.summary if video else None
         if not summary:
+            llm = ctx["llm"].for_user(user_id)
+            llm_name = llm.name
             summary = await summarize(llm, meta, transcript)
             async with sm() as db:
                 video = await db.get(Video, video_id)
@@ -85,7 +87,7 @@ async def process_youtube(ctx, *, job_id: int, user_id: int, chat_id: int, video
         except TelegramBadRequest:
             pass
         async with sm() as db:
-            await repo.finish_job(db, job_id, True, llm.name)
+            await repo.finish_job(db, job_id, True, llm_name)
             await db.commit()
     except TranscriptError as e:
         await fail(str(e), repr(e))

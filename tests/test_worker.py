@@ -74,3 +74,11 @@ async def test_no_transcript(ctx):
     assert last.args[0].startswith("❌ У этого видео нет субтитров")
     async with ctx["sessionmaker"]() as s:
         assert (await s.get(Job, 1)).status == "failed"
+
+
+async def test_no_api_key_still_sends_transcript(ctx):
+    from app.services.llm.factory import LLMRouter
+    ctx["llm"] = LLMRouter(Settings(bot_token="1:x", owner_ids=[999], anthropic_api_key=None))
+    await tasks.process_youtube(ctx, job_id=1, user_id=1, chat_id=10, video_id="dQw4w9WgXcQ", status_message_id=5)
+    assert ctx["bot"].send_document.await_count == 1  # расшифровка ушла
+    assert "не настроены" in ctx["bot"].edit_message_text.await_args.args[0]

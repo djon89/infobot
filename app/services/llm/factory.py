@@ -1,14 +1,14 @@
 from app.config import Settings
 
 from .anthropic_api import AnthropicProvider
-from .base import LLMProvider
+from .base import LLMError, LLMProvider
 from .claude_cli import ClaudeCliProvider
 
 
 def build_provider(name: str, s: Settings) -> LLMProvider:
     if name == "anthropic":
         if not s.anthropic_api_key:
-            raise RuntimeError("Провайдер 'anthropic' выбран, но ANTHROPIC_API_KEY не задан")
+            raise LLMError("конспекты для этого пользователя пока не настроены (нет ключа API).")
         return AnthropicProvider(s.anthropic_api_key, s.anthropic_model, s.anthropic_effort)
     if name == "claude_cli":
         return ClaudeCliProvider(s.claude_cli_model, s.claude_cli_timeout)
