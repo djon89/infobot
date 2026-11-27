@@ -85,6 +85,34 @@ PY
   chmod 600 .env
 fi
 
+set_env() {  # set_env KEY VALUE — заменить или дописать строку в .env
+  if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi
+}
+
+if ! grep -qE '^TELEGRAM_API_ID=.+' .env && ! grep -q '^BIGFILES_ASKED=1' .env; then
+  say "Скачивание больших видео (до 2 ГБ)"
+  echo "   Без этого бот отправляет файлы только до 50 МБ (~5–10 минут видео в 720p)."
+  echo "   Данные: my.telegram.org → API development tools (инструкция у Claude)."
+  echo "   Нет данных под рукой — нажмите Enter, настроим позже."
+  API_ID=$(ask "   App api_id (только цифры): " | tr -d '[:space:]')
+  API_HASH=""
+  [ -n "$API_ID" ] && API_HASH=$(ask "   App api_hash: " | tr -d '[:space:]')
+  if [ -n "$API_ID" ] && [ -n "$API_HASH" ]; then
+    set_env TELEGRAM_API_ID "$API_ID"
+    set_env TELEGRAM_API_HASH "$API_HASH"
+  fi
+  set_env BIGFILES_ASKED 1
+fi
+
+if grep -qE '^TELEGRAM_API_ID=.+' .env && ! grep -qE '^TELEGRAM_API_URL=.+' .env; then
+  say "Переключаю бота на свой сервер Telegram Bot API…"
+  docker compose stop bot worker >/dev/null 2>&1 || true
+  TOKEN=$(grep '^BOT_TOKEN=' .env | cut -d= -f2-)
+  curl -fsS "https://api.telegram.org/bot${TOKEN}/logOut" >/dev/null || warn "logOut не прошёл (возможно, уже выполнен)"
+  set_env TELEGRAM_API_URL "http://telegram-bot-api:8081"
+  set_env COMPOSE_PROFILES localapi
+fi
+
 say "Собираю бота (3–5 минут)…"
 docker compose build --progress=plain 2>&1 | grep -E "^#[0-9]+ \\[.*\\] (FROM|RUN|COPY)|ERROR|error" || true
 docker image inspect infobot-worker >/dev/null 2>&1 || die "сборка не удалась — пришлите этот вывод"

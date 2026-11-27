@@ -15,9 +15,29 @@ services:
     command: arq app.worker.main.WorkerSettings
     env_file: .env
     restart: unless-stopped
+    volumes: [downloads:/data/downloads]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+
+  # PO-токены для YouTube: без них YouTube часто не отдаёт видео серверам
+  bgutil:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
+    restart: unless-stopped
+
+  # Свой сервер Telegram Bot API: отправка файлов до 2 ГБ (облачный — только 50 МБ).
+  # Включается, когда в .env есть COMPOSE_PROFILES=localapi и TELEGRAM_API_ID/HASH.
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:10.5
+    profiles: [localapi]
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - tgapi:/var/lib/telegram-bot-api
+      - downloads:/data/downloads:ro
 
   postgres:
     image: postgres:16-alpine
@@ -44,3 +64,5 @@ services:
 
 volumes:
   pgdata:
+  downloads:
+  tgapi:

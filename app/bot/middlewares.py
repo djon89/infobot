@@ -1,7 +1,7 @@
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from app.config import Settings
 
@@ -10,7 +10,7 @@ class AccessMiddleware(BaseMiddleware):
     def __init__(self, settings: Settings):
         self.s = settings
 
-    async def __call__(self, handler: Callable[[Message, dict], Awaitable[Any]], event: Message, data: dict):
+    async def __call__(self, handler: Callable[[Any, dict], Awaitable[Any]], event: Message | CallbackQuery, data: dict):
         u = event.from_user
         if u is None:
             return None

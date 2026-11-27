@@ -12,6 +12,6 @@ COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir .
 
-RUN useradd -m bot
+RUN useradd -m bot && mkdir -p /data/downloads && chown bot:bot /data/downloads
 USER bot
 CMD ["python", "-m", "app.bot.main"]

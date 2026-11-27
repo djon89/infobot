@@ -41,7 +41,10 @@ def split_message(text: str, limit: int = TG_LIMIT) -> list[str]:
     return parts
 
 
-def safe_filename(title: str, suffix: str, max_len: int = 60) -> str:
+def nice_name(title: str, max_len: int = 60) -> str:
     name = re.sub(r"[^\w\s\-.,()]+", "", title, flags=re.UNICODE).strip()
-    name = re.sub(r"\s+", " ", name)[:max_len].strip() or "video"
-    return f"{name} — {suffix}"
+    return re.sub(r"\s+", " ", name)[:max_len].strip(" .") or "video"
+
+
+def safe_filename(title: str, suffix: str, max_len: int = 60) -> str:
+    return f"{nice_name(title, max_len)} — {suffix}"

@@ -47,3 +47,23 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class UserSettings(Base):
+    __tablename__ = "user_settings"
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), primary_key=True)
+    quality: Mapped[str] = mapped_column(String(16))
+    audio: Mapped[str] = mapped_column(String(16))
+
+
+class VideoFile(Base):
+    """Уже загруженные в Telegram файлы: повторная отправка мгновенна, без скачивания."""
+    __tablename__ = "video_files"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_id: Mapped[str] = mapped_column(String(16), index=True)
+    quality: Mapped[str] = mapped_column(String(16))
+    audio: Mapped[str] = mapped_column(String(16))
+    is_audio: Mapped[bool] = mapped_column(Boolean, default=False)
+    file_id: Mapped[str] = mapped_column(Text)
+    size: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

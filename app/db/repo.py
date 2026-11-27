@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.transcript.base import Segment, Transcript
 from app.services.youtube import VideoMeta
 
-from .models import Job, User, Video, utcnow
+from .models import Job, User, UserSettings, Video, VideoFile, utcnow
 
 
 async def upsert_user(s: AsyncSession, tg_user) -> User:
@@ -29,8 +29,8 @@ async def jobs_last_24h(s: AsyncSession, user_id: int) -> int:
     return (await s.execute(q)).scalar_one()
 
 
-async def create_job(s: AsyncSession, user_id: int, target: str) -> Job:
-    j = Job(user_id=user_id, target=target)
+async def create_job(s: AsyncSession, user_id: int, target: str, kind: str = "youtube_summary") -> Job:
+    j = Job(user_id=user_id, target=target, kind=kind)
     s.add(j)
     await s.flush()
     return j
@@ -59,3 +59,27 @@ async def save_transcript(s: AsyncSession, meta: VideoMeta, t: Transcript) -> Vi
     v.segments = [[seg.start, seg.text] for seg in t.segments]
     s.add(v)
     return v
+
+
+async def get_user_settings(s: AsyncSession, user_id: int, default_quality: str, default_audio: str) -> UserSettings:
+    us = await s.get(UserSettings, user_id)
+    return us or UserSettings(user_id=user_id, quality=default_quality, audio=default_audio)
+
+
+async def set_user_setting(s: AsyncSession, user_id: int, default_quality: str, default_audio: str,
+                           quality: str | None = None, audio: str | None = None) -> UserSettings:
+    us = await s.get(UserSettings, user_id)
+    if us is None:
+        us = UserSettings(user_id=user_id, quality=default_quality, audio=default_audio)
+        s.add(us)
+    if quality:
+        us.quality = quality
+    if audio:
+        us.audio = audio
+    return us
+
+
+async def find_video_file(s: AsyncSession, video_id: str, quality: str, audio: str) -> VideoFile | None:
+    q = select(VideoFile).where(VideoFile.video_id == video_id, VideoFile.quality == quality,
+                                VideoFile.audio == audio).order_by(VideoFile.id.desc()).limit(1)
+    return (await s.execute(q)).scalar_one_or_none()
