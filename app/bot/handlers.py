@@ -44,7 +44,8 @@ async def start(m: Message):
 
 @router.message(Command("help"))
 async def help_(m: Message):
-    await m.answer(HELP)
+    from app.changelog import VERSION
+    await m.answer(HELP + f"\n\nВерсия бота: {VERSION}")
 
 
 async def _quota_ok(s, settings: Settings, user_id: int, n: int = 1) -> bool:

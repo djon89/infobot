@@ -140,3 +140,10 @@ class DownloadLog(Base):
     direct_blocked: Mapped[bool] = mapped_column(Boolean, default=False)  # напрямую YouTube отказал
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class BotMeta(Base):
+    """Служебные значения бота (например, последняя объявленная версия)."""
+    __tablename__ = "bot_meta"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)

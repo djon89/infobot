@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.db.session import init_db, make_engine, make_sessionmaker
 from app.telegram_client import make_bot
 
+from .announce import announce_update
 from .handlers import router
 from .middlewares import AccessMiddleware
 
@@ -22,7 +23,8 @@ async def main():
     arq = await create_pool(RedisSettings.from_dsn(s.redis_url))
 
     bot = make_bot(s)
-    dp = Dispatcher(settings=s, sessionmaker=make_sessionmaker(engine), arq=arq)
+    sessionmaker = make_sessionmaker(engine)
+    dp = Dispatcher(settings=s, sessionmaker=sessionmaker, arq=arq)
     dp.message.middleware(AccessMiddleware(s))
     dp.callback_query.middleware(AccessMiddleware(s))
     dp.include_router(router)
@@ -31,6 +33,10 @@ async def main():
                                BotCommand(command="import", description="Импорт подписок YouTube"),
                                BotCommand(command="settings", description="Настройки"),
                                BotCommand(command="help", description="Что умеет бот")])
+    try:
+        await announce_update(bot, sessionmaker, s.owner_ids)
+    except Exception:  # noqa: BLE001 — объявление не должно мешать запуску
+        logging.exception("update announcement failed")
     await dp.start_polling(bot)
 
 
