@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+DOWNLOAD_QUEUE = "arq:downloads"  # отдельная очередь, чтобы скачивания не задерживали конспекты
+
 LLMProviderName = Literal["anthropic", "claude_cli"]
 
 
@@ -15,7 +17,8 @@ class Settings(BaseSettings):
     owner_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)  # безлимит + личный LLM-провайдер
     access_mode: Literal["public", "allowlist"] = "public"
     allowlist_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
-    daily_limit: int = 10  # запросов в сутки на обычного пользователя
+    monthly_summaries: int = 30  # конспектов и разборов за 30 дней на пользователя
+    monthly_downloads: int = 15  # скачиваний за 30 дней
 
     # Свой сервер Telegram Bot API: файлы до 2 ГБ вместо 50 МБ
     telegram_api_url: str | None = None  # http://telegram-bot-api:8081

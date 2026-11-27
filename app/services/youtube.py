@@ -46,3 +46,20 @@ async def fetch_meta(video_id: str, proxy: str | None = None) -> VideoMeta:
             return VideoMeta(video_id, d.get("title") or video_id, d.get("author_name"))
     except Exception:
         return VideoMeta(video_id, video_id)
+
+
+THUMBS = ("maxresdefault", "sddefault", "hqdefault")
+
+
+async def pick_thumbnail(video_id: str) -> str | None:
+    """Лучшая существующая обложка видео (у старых/маленьких видео нет maxres)."""
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            for name in THUMBS:
+                url = f"https://i.ytimg.com/vi/{video_id}/{name}.jpg"
+                r = await c.head(url)
+                if r.status_code == 200:
+                    return url
+    except httpx.HTTPError:
+        pass
+    return None

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app import digest as dg
 from app.db import subs_repo as sr
 from app.db.models import Channel, DigestSettings, GoogleAccount, UserChannel, utcnow
+from app.services.blurbs import make_blurbs
 from app.services.feeds import FeedError, channel_url_for_video
 from app.services.google_yt import GoogleAuthError, GoogleYouTube, Pending
 
@@ -26,6 +27,31 @@ async def _edit(bot: Bot, chat_id: int, msg_id: int, text: str, reply_markup=Non
 
 def _aware(dt):
     return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+# ---------- умная сводка: строка «что внутри» ----------
+
+async def fill_blurbs(ctx, user_id: int, items) -> dict[str, str]:
+    """Строки для видео сводки: готовые из кэша, недостающие — одним запросом к модели.
+    Если модель недоступна — сводка просто без строк."""
+    sm = ctx["sessionmaker"]
+    ids = [v.video_id for v, _ in items]
+    async with sm() as db:
+        known = await sr.blurbs_for(db, ids)
+    lines = {vid: b.blurb for vid, b in known.items() if b.blurb}
+    missing = [{"id": v.video_id, "title": v.title, "channel": c.title,
+                "description": known[v.video_id].description if v.video_id in known else ""}
+               for v, c in items if v.video_id not in lines][:60]
+    if missing:
+        try:
+            new = await make_blurbs(ctx["llm"].for_user(user_id), missing)
+            async with sm() as db:
+                await sr.save_blurbs(db, new)
+                await db.commit()
+            lines.update(new)
+        except Exception as e:  # noqa: BLE001
+            log.warning("blurbs failed: %s", e)
+    return lines
 
 
 # ---------- опрос лент ----------
@@ -55,12 +81,22 @@ async def poll_channels(ctx, channel_ids: list[str]) -> int:
     return total
 
 
+POLL_EVERY = timedelta(minutes=55)
+POLL_BATCH = 400
+
+
 async def poll_feeds(ctx):
+    """Каналы, которые давно не проверялись, — порциями: нагрузка на YouTube ровная при любом их числе."""
     async with ctx["sessionmaker"]() as db:
         ids = await sr.channels_to_poll(db)
-    if ids:
-        n = await poll_channels(ctx, ids)
-        log.info("polled %d channels, %d new videos", len(ids), n)
+        rows = (await db.execute(select(Channel.id, Channel.checked_at).where(Channel.id.in_(ids)))).all() if ids else []
+    cutoff = utcnow() - POLL_EVERY
+    stale = sorted((r for r in rows if not r.checked_at or _aware(r.checked_at) < cutoff),
+                   key=lambda r: _aware(r.checked_at) or datetime.min.replace(tzinfo=timezone.utc))
+    batch = [r.id for r in stale[:POLL_BATCH]]
+    if batch:
+        n = await poll_channels(ctx, batch)
+        log.info("polled %d/%d channels, %d new videos", len(batch), len(ids), n)
 
 
 # ---------- подписка на канал ----------
@@ -92,7 +128,8 @@ async def follow_channel(ctx, *, user_id: int, chat_id: int, channel_url: str | 
     if not latest:
         await _edit(bot, chat_id, status_message_id, head)
         return
-    text, kb = dg.render(latest, 0, d.id, title="Последние видео канала")
+    text, kb = dg.render(latest, 0, d.id, title="Последние видео канала",
+                         blurbs=await fill_blurbs(ctx, user_id, latest))
     await _edit(bot, chat_id, status_message_id, head + "\n\n" + text, kb)
 
 
@@ -112,7 +149,7 @@ async def make_digest(ctx, *, user_id: int, chat_id: int, manual: bool = True,
 
     # свежие данные по каналам, которые давно не проверялись
     async with sm() as db:
-        stale_before = utcnow() - timedelta(minutes=15)
+        stale_before = utcnow() - timedelta(minutes=45)
         rows = (await db.execute(select(Channel).where(Channel.id.in_(channel_ids)))).scalars()
         stale = [c.id for c in rows if not c.checked_at or _aware(c.checked_at) < stale_before]
     if stale:
@@ -132,7 +169,9 @@ async def make_digest(ctx, *, user_id: int, chat_id: int, manual: bool = True,
                         f"Новых видео нет (с {since.astimezone(ZoneInfo(ds.tz)):%d.%m %H:%M}). "
                         f"Слежу за каналами: {len(channel_ids)}.")
         return False
-    text, kb = dg.render(items, 0, d.id)
+    if status_message_id:
+        await _edit(bot, chat_id, status_message_id, f"✍️ Смотрю, что внутри {len(items)} новых видео…")
+    text, kb = dg.render(items, 0, d.id, blurbs=await fill_blurbs(ctx, user_id, items))
     await _send(bot, chat_id, status_message_id, text, kb)
     return True
 

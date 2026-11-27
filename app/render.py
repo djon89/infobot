@@ -11,7 +11,9 @@ from aiogram.types import (
     InputRichBlockFooter,
     InputRichBlockList,
     InputRichBlockListItem,
+    InputMediaPhoto,
     InputRichBlockParagraph,
+    InputRichBlockPhoto,
     InputRichBlockPullQuotation,
     InputRichBlockSectionHeading,
     InputRichBlockTable,
@@ -76,9 +78,13 @@ def _header_blocks(meta: VideoMeta, d: dict, title_prefix: str = ""):
     return [_h(title_prefix + d["headline"], 1), _p(RichTextItalic(type="italic", text=by))]
 
 
-def summary_blocks(meta: VideoMeta, d: dict, transcript_note: str = "") -> list:
+def cover_block(url: str):
+    return InputRichBlockPhoto(type="photo", photo=InputMediaPhoto(media=url))
+
+
+def summary_blocks(meta: VideoMeta, d: dict, transcript_note: str = "", cover_url: str | None = None) -> list:
     vid = meta.video_id
-    b = _header_blocks(meta, d)
+    b = ([cover_block(cover_url)] if cover_url else []) + _header_blocks(meta, d)
     b.append(InputRichBlockBlockQuotation(type="blockquote", blocks=[_p(d["tldr"])]))
 
     b += [_h("🔑 Главное", 2), _points(vid, d["key_points"])]

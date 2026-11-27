@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Channel, Digest, DigestSettings, FeedVideo, UserChannel, utcnow
+from .models import Channel, Digest, DigestSettings, FeedVideo, UserChannel, VideoBlurb, utcnow
 
 
 async def follow(s: AsyncSession, user_id: int, channel_id: str, title: str, source: str = "manual") -> bool:
@@ -47,7 +47,25 @@ async def save_entries(s: AsyncSession, entries) -> int:
             new += 1
         else:
             v.title = e.title
+        if getattr(e, "description", None) and not await s.get(VideoBlurb, e.video_id):
+            s.add(VideoBlurb(video_id=e.video_id, description=e.description[:2000]))
     return new
+
+
+async def blurbs_for(s: AsyncSession, video_ids: list[str]) -> dict[str, VideoBlurb]:
+    if not video_ids:
+        return {}
+    rows = (await s.execute(select(VideoBlurb).where(VideoBlurb.video_id.in_(video_ids)))).scalars()
+    return {b.video_id: b for b in rows}
+
+
+async def save_blurbs(s: AsyncSession, lines: dict[str, str]) -> None:
+    for vid, line in lines.items():
+        b = await s.get(VideoBlurb, vid)
+        if b is None:
+            s.add(VideoBlurb(video_id=vid, blurb=line))
+        else:
+            b.blurb = line
 
 
 async def get_digest_settings(s: AsyncSession, user_id: int, default_tz: str, default_hour: int | None) -> DigestSettings:

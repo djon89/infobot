@@ -19,7 +19,7 @@ from app import render
 from app.services.summarizer import deep_dive as llm_deep_dive
 from app.services.summarizer import load_summary, summarize
 from app.services.transcript.base import TranscriptError
-from app.services.youtube import VideoMeta, fetch_meta
+from app.services.youtube import VideoMeta, fetch_meta, pick_thumbnail
 from app.telegram_format import nice_name, safe_filename
 from app.telegram_send import send_article
 
@@ -98,7 +98,8 @@ async def process_youtube(ctx, *, job_id: int, user_id: int, chat_id: int, video
                               filename=safe_filename(meta.title, "конспект.md")),
         )
         note = " (авто-субтитры)" if transcript.is_generated else ""
-        await send_article(bot, chat_id, render.summary_blocks(meta, summary, note),
+        cover = await pick_thumbnail(video_id)
+        await send_article(bot, chat_id, render.summary_blocks(meta, summary, note, cover),
                            render.summary_html(meta, summary),
                            reply_markup=await _download_kb(ctx, user_id, video_id, summary=True),
                            reply_to=reply_to)

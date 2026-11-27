@@ -20,8 +20,10 @@ def ago(dt: datetime, now: datetime | None = None) -> str:
     return "вчера" if d == 1 else f"{d} дн назад"
 
 
-def render(items, page: int, digest_id: int, title: str = "📬 Новые видео", now=None):
-    """items: [(FeedVideo, Channel)]. Возвращает (text, keyboard)."""
+def render(items, page: int, digest_id: int, title: str = "📬 Новые видео", now=None,
+           blurbs: dict[str, str] | None = None):
+    """items: [(FeedVideo, Channel)], blurbs: video_id → строка «что внутри». Возвращает (text, keyboard)."""
+    blurbs = blurbs or {}
     pages = max(1, (len(items) + PAGE - 1) // PAGE)
     page = min(max(page, 0), pages - 1)
     chunk = items[page * PAGE:(page + 1) * PAGE]
@@ -32,8 +34,11 @@ def render(items, page: int, digest_id: int, title: str = "📬 Новые ви�
     rows, row = [], []
     for i, (v, c) in enumerate(chunk, start=page * PAGE + 1):
         url = f"https://www.youtube.com/watch?v={v.video_id}"
-        lines.append(f"<b>{i}.</b> <a href=\"{url}\">{html.escape(v.title)}</a>\n"
-                     f"     <i>{html.escape(c.title)}</i> · {ago(v.published_at, now)}")
+        line = f"<b>{i}.</b> <a href=\"{url}\">{html.escape(v.title)}</a>\n"
+        if blurbs.get(v.video_id):
+            line += f"     ↳ {html.escape(blurbs[v.video_id])}\n"
+        line += f"     <i>{html.escape(c.title)}</i> · {ago(v.published_at, now)}"
+        lines.append(line)
         row += [B(text=f"📝 {i}", callback_data=f"s:{v.video_id}"),
                 B(text=f"⬇️ {i}", callback_data=f"dl:{v.video_id}:d:d")]
         if len(row) == 4:

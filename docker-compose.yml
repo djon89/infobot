@@ -15,10 +15,32 @@ services:
     command: arq app.worker.main.WorkerSettings
     env_file: .env
     restart: unless-stopped
+    volumes: [backups:/backups:ro]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # отдельный воркер скачиваний: долгие загрузки не задерживают конспекты
+  worker-dl:
+    build: .
+    image: infobot-worker
+    command: arq app.worker.main.DownloadWorkerSettings
+    env_file: .env
+    restart: unless-stopped
     volumes: [downloads:/data/downloads]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+
+  # резервная копия базы раз в сутки (14 дней), раз в неделю приходит владельцу в Telegram
+  backup:
+    image: postgres:16-alpine
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment: {PGPASSWORD: bot}
+    volumes: ["./deploy/backup.sh:/backup.sh:ro", "backups:/backups"]
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
 
   # PO-токены для YouTube: без них YouTube часто не отдаёт видео серверам
   bgutil:
@@ -55,6 +77,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -66,3 +90,5 @@ volumes:
   pgdata:
   downloads:
   tgapi:
+  backups:
+  redisdata:

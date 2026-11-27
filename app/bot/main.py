@@ -6,6 +6,7 @@ from aiogram.types import BotCommand
 from arq import create_pool
 from arq.connections import RedisSettings
 
+from app import alerts
 from app.config import get_settings
 from app.db.session import init_db, make_engine, make_sessionmaker
 from app.telegram_client import make_bot
@@ -23,6 +24,7 @@ async def main():
     arq = await create_pool(RedisSettings.from_dsn(s.redis_url))
 
     bot = make_bot(s)
+    alerts.install(bot, s.owner_ids, "бот")
     sessionmaker = make_sessionmaker(engine)
     dp = Dispatcher(settings=s, sessionmaker=sessionmaker, arq=arq)
     dp.message.middleware(AccessMiddleware(s))

@@ -147,3 +147,11 @@ class BotMeta(Base):
     __tablename__ = "bot_meta"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class VideoBlurb(Base):
+    """Описание видео из ленты и одна строка «что внутри» для умной сводки (общая для всех)."""
+    __tablename__ = "video_blurbs"
+    video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    blurb: Mapped[str | None] = mapped_column(Text)

@@ -58,7 +58,8 @@ async def test_full_flow_and_cache(ctx):
     assert "[01:01] world" in txt
     rich = bot.send_rich_message.await_args
     blocks = rich.kwargs["rich_message"].blocks
-    assert blocks[0].type == "heading" and blocks[0].text.startswith("Сон важнее")
+    assert blocks[0].type == "photo" and blocks[0].photo.media.endswith("/dQw4w9WgXcQ/maxresdefault.jpg")
+    assert blocks[1].type == "heading" and blocks[1].text.startswith("Сон важнее")
     assert any(b.type == "table" for b in blocks)
     cbs = [b.callback_data for row in rich.kwargs["reply_markup"].inline_keyboard for b in row]
     assert cbs[:2] == ["sh:dQw4w9WgXcQ", "dp:dQw4w9WgXcQ"]
@@ -118,3 +119,19 @@ async def test_legacy_text_summary_regenerated(ctx):
         await s.commit()
     await tasks.process_youtube(ctx, job_id=1, user_id=1, chat_id=10, video_id="dQw4w9WgXcQ", status_message_id=5)
     assert ctx["_llm"].calls == 1
+
+
+
+async def test_cover_rejected_retries_without_it(ctx):
+    from aiogram.exceptions import TelegramBadRequest
+    calls = []
+
+    async def fake_rich(chat_id, rich_message, **kw):
+        calls.append([b.type for b in rich_message.blocks])
+        if "photo" in calls[-1]:
+            raise TelegramBadRequest(method=MagicMock(), message="WEBPAGE_MEDIA_EMPTY")
+        return MagicMock()
+    ctx["bot"].send_rich_message.side_effect = fake_rich
+    await tasks.process_youtube(ctx, job_id=1, user_id=1, chat_id=10, video_id="dQw4w9WgXcQ", status_message_id=5)
+    assert calls[0][0] == "photo" and "photo" not in calls[1]
+    ctx["bot"].send_message.assert_not_awaited()  # до HTML-запасного дело не дошло

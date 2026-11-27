@@ -13,11 +13,16 @@ log = logging.getLogger(__name__)
 async def send_article(bot: Bot, chat_id: int, blocks: list, fallback_html: str,
                        reply_markup=None, reply_to: int | None = None):
     reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
-    try:
-        return await bot.send_rich_message(chat_id, rich_message=InputRichMessage(blocks=blocks),
-                                           reply_markup=reply_markup, reply_parameters=reply)
-    except TelegramBadRequest as e:
-        log.warning("rich message rejected (%s) — sending HTML fallback", e)
+    attempts = [blocks]
+    if any(getattr(b, "type", None) == "photo" for b in blocks):
+        attempts.append([b for b in blocks if getattr(b, "type", None) != "photo"])  # без обложки
+    for attempt in attempts:
+        try:
+            return await bot.send_rich_message(chat_id, rich_message=InputRichMessage(blocks=attempt),
+                                               reply_markup=reply_markup, reply_parameters=reply)
+        except TelegramBadRequest as e:
+            log.warning("rich message rejected (%s)", e)
+    log.warning("sending HTML fallback")
     parts = split_message(fallback_html)
     msg = None
     for i, part in enumerate(parts):

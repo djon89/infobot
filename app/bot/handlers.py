@@ -7,11 +7,11 @@ from aiogram.types import CallbackQuery, Message
 from arq.connections import ArqRedis
 
 from app.bot import keyboards as kb
-from app.config import Settings
+from app.config import DOWNLOAD_QUEUE, Settings
 from app import digest as dg
 from app.db import repo
 from app.db import subs_repo as sr
-from app import render
+from app import limits, render
 from app.db.models import Digest, Video
 from app.services.summarizer import load_summary
 from app.services.youtube import VideoMeta
@@ -48,10 +48,6 @@ async def help_(m: Message):
     await m.answer(HELP + f"\n\nВерсия бота: {VERSION}")
 
 
-async def _quota_ok(s, settings: Settings, user_id: int, n: int = 1) -> bool:
-    if user_id in settings.owner_ids:
-        return True
-    return await repo.jobs_last_24h(s, user_id) + n <= settings.daily_limit
 
 
 # ---------- настройки ----------
@@ -59,7 +55,8 @@ async def _quota_ok(s, settings: Settings, user_id: int, n: int = 1) -> bool:
 async def _settings_view(s, settings: Settings, user_id: int):
     us = await repo.get_user_settings(s, user_id, settings.default_quality, settings.default_audio)
     ds = await sr.get_digest_settings(s, user_id, settings.default_tz, settings.default_digest_hour)
-    return (kb.settings_text(us.quality, us.audio, ds.hour, ds.tz),
+    usage = await limits.usage_text(s, settings, user_id)
+    return (kb.settings_text(us.quality, us.audio, ds.hour, ds.tz) + f"\n\n📊 {usage}",
             kb.settings_kb(us.quality, us.audio, ds.hour))
 
 
@@ -105,16 +102,16 @@ async def _enqueue_download(c: CallbackQuery, settings: Settings, sessionmaker, 
             us = await repo.get_user_settings(s, c.from_user.id, settings.default_quality, settings.default_audio)
             quality = us.quality if quality == "d" else quality
             audio = us.audio if audio == "d" else audio
-        if not await _quota_ok(s, settings, c.from_user.id):
+        if err := await limits.check(s, settings, c.from_user.id, "download"):
             await s.commit()
-            await c.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа.", show_alert=True)
+            await c.answer(err, show_alert=True)
             return
         job = await repo.create_job(s, c.from_user.id, f"{video_id}:{quality}:{audio}", kind="youtube_video")
         await s.commit()
     await c.answer("Скачиваю…")
     status = await c.message.answer(f"⏳ Скачивание в очереди ({QUALITY_LABELS.get(quality, quality)})…")
     await arq.enqueue_job(
-        "download_video", job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
+        "download_video", _queue_name=DOWNLOAD_QUEUE, job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
         video_id=video_id, quality=quality, audio=audio, status_message_id=status.message_id,
     )
 
@@ -130,7 +127,7 @@ async def pick_cb(c: CallbackQuery, arq: ArqRedis):
     vid = c.data.split(":", 1)[1]
     await c.answer("Смотрю, какие есть варианты…")
     status = await c.message.answer("🔎 Смотрю доступные качества…")
-    await arq.enqueue_job("probe_video", chat_id=c.message.chat.id, video_id=vid,
+    await arq.enqueue_job("probe_video", _queue_name=DOWNLOAD_QUEUE, chat_id=c.message.chat.id, video_id=vid,
                           status_message_id=status.message_id)
 
 
@@ -229,7 +226,8 @@ async def digest_page_cb(c: CallbackQuery, sessionmaker):
             await c.answer("Сводка устарела", show_alert=True)
             return
         items = await sr.digest_items(s, d)
-    text, markup = dg.render(items, int(page), d.id)
+        bl = await sr.blurbs_for(s, [v.video_id for v, _ in items])
+    text, markup = dg.render(items, int(page), d.id, blurbs={k: b.blurb for k, b in bl.items() if b.blurb})
     await c.message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
     await c.answer()
 
@@ -239,9 +237,9 @@ async def summary_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: Ar
     vid = c.data.split(":", 1)[1]
     async with sessionmaker() as s:
         await repo.upsert_user(s, c.from_user)
-        if not await _quota_ok(s, settings, c.from_user.id):
+        if err := await limits.check(s, settings, c.from_user.id, "summary"):
             await s.commit()
-            await c.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа.", show_alert=True)
+            await c.answer(err, show_alert=True)
             return
         job = await repo.create_job(s, c.from_user.id, vid)
         await s.commit()
@@ -299,9 +297,9 @@ async def deep_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: ArqRe
     _, vid, idx = c.data.split(":")
     async with sessionmaker() as s:
         await repo.upsert_user(s, c.from_user)
-        if not await _quota_ok(s, settings, c.from_user.id):
+        if err := await limits.check(s, settings, c.from_user.id, "summary"):
             await s.commit()
-            await c.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа.", show_alert=True)
+            await c.answer(err, show_alert=True)
             return
         job = await repo.create_job(s, c.from_user.id, f"{vid}:{idx}", kind="deep_dive")
         await s.commit()
@@ -338,9 +336,9 @@ async def on_text(m: Message, settings: Settings, sessionmaker, arq: ArqRedis):
 
     async with sessionmaker() as s:
         await repo.upsert_user(s, user)
-        if not await _quota_ok(s, settings, user.id, len(ids)):
+        if err := await limits.check(s, settings, user.id, "summary", len(ids)):
             await s.commit()
-            await m.answer(f"Лимит — {settings.daily_limit} запросов за 24 часа. Попробуйте позже.")
+            await m.answer(err)
             return
         jobs = [await repo.create_job(s, user.id, vid) for vid in ids]
         await s.commit()

@@ -48,6 +48,7 @@ class FeedEntry:
     channel_id: str
     title: str
     published: datetime
+    description: str = ""
 
 
 def parse_channel_page(html: str) -> ChannelInfo | None:
@@ -71,7 +72,8 @@ def parse_feed(xml_text: str, channel_id: str) -> list[FeedEntry]:
             continue
         out.append(FeedEntry(vid, e.findtext("yt:channelId", default=channel_id, namespaces=_NS),
                              e.findtext("a:title", default=vid, namespaces=_NS),
-                             datetime.fromisoformat(pub.replace("Z", "+00:00"))))
+                             datetime.fromisoformat(pub.replace("Z", "+00:00")),
+                             e.findtext("media:group/media:description", default="", namespaces=_NS)))
     return out
 
 
