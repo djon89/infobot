@@ -8,11 +8,13 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import select
 
 from app import digest as dg
+from app import posts as pst
 from app.db import subs_repo as sr
-from app.db.models import Channel, DigestSettings, GoogleAccount, UserChannel, utcnow
+from app.db.models import Channel, DigestSettings, GoogleAccount, Post, UserChannel, utcnow
 from app.services.blurbs import make_blurbs
 from app.services.feeds import FeedError, channel_url_for_video
 from app.services.google_yt import GoogleAuthError, GoogleYouTube, Pending
+from app.telegram_send import send_or_edit_rich
 
 log = logging.getLogger(__name__)
 
@@ -35,13 +37,15 @@ async def fill_blurbs(ctx, user_id: int, items) -> dict[str, str]:
     """Строки для видео сводки: готовые из кэша, недостающие — одним запросом к модели.
     Если модель недоступна — сводка просто без строк."""
     sm = ctx["sessionmaker"]
-    ids = [v.video_id for v, _ in items]
+    norm = [it if isinstance(it, dict) else {"id": it[0].video_id, "title": it[0].title, "channel": it[1].title}
+            for it in items]
+    ids = [it["id"] for it in norm]
     async with sm() as db:
         known = await sr.blurbs_for(db, ids)
     lines = {vid: b.blurb for vid, b in known.items() if b.blurb}
-    missing = [{"id": v.video_id, "title": v.title, "channel": c.title,
-                "description": known[v.video_id].description if v.video_id in known else ""}
-               for v, c in items if v.video_id not in lines][:60]
+    missing = [{"id": it["id"], "title": it["title"], "channel": it["channel"],
+                "description": known[it["id"]].description if it["id"] in known else ""}
+               for it in norm if it["id"] not in lines][:60]
     if missing:
         try:
             new = await make_blurbs(ctx["llm"].for_user(user_id), missing)
@@ -101,20 +105,85 @@ async def poll_feeds(ctx):
 
 # ---------- подписка на канал ----------
 
+async def channel_page(ctx, channel_id: str, offset: int) -> tuple[list[dict], bool]:
+    """Видео канала [offset, offset+5) от новых к старым. Первые ~15 — из RSS (с датами и описаниями),
+    дальше — через yt-dlp. Возвращает (items, есть_ещё)."""
+    n = pst.CHANNEL_PAGE
+    entries = await ctx["feeds"].uploads(channel_id)
+    async with ctx["sessionmaker"]() as db:
+        ch = await db.get(Channel, channel_id)
+        if ch is None:
+            ch = Channel(id=channel_id, title=channel_id)
+            db.add(ch)
+            await db.flush()
+        await sr.save_entries(db, entries)
+        await db.commit()
+    title = ch.title if ch else channel_id
+    if offset + n <= len(entries) or len(entries) < 15:
+        page = entries[offset:offset + n]
+        items = [pst.item(e.video_id, e.title, title, e.published) for e in page]
+        return items, offset + n < len(entries) or len(entries) >= 15
+    got = await ctx["downloader"].uploads(channel_id, offset, n)
+    return [pst.item(e["id"], e["title"], title, None, e.get("duration")) for e in got], len(got) == n
+
+
+async def show_channel(ctx, *, user_id: int, chat_id: int, channel_id: str, offset: int = 0,
+                       message_id: int | None = None, channel_description: str = "", head_text: str = ""):
+    """Пост «страница канала»: 5 видео с обложками, кнопки, «Ещё 5 видео»."""
+    bot, sm = ctx["bot"], ctx["sessionmaker"]
+    try:
+        items, has_more = await channel_page(ctx, channel_id, offset)
+    except Exception:  # noqa: BLE001
+        log.exception("channel page %s/%s failed", channel_id, offset)
+        if message_id:
+            await _edit(bot, chat_id, message_id, "❌ Не удалось загрузить видео канала.")
+        return
+    lines = await fill_blurbs(ctx, user_id, items)
+    for it in items:
+        it["blurb"] = lines.get(it["id"])
+    async with sm() as db:
+        ch = await db.get(Channel, channel_id)
+        followed = await db.get(UserChannel, (user_id, channel_id)) is not None
+        post = Post(user_id=user_id, kind="channel", items=items, meta={
+            "channel_id": channel_id, "channel_title": ch.title if ch else channel_id, "offset": offset,
+            "has_more": has_more, "followed": followed, "channel_description": channel_description})
+        db.add(post)
+        await db.commit()
+    if not items:
+        text = (head_text + "\n\n" if head_text else "") + "У канала нет обычных видео (только Shorts или пусто)."
+        if message_id:
+            await _edit(bot, chat_id, message_id, text)
+        else:
+            await bot.send_message(chat_id, text)
+        return
+    if head_text and message_id:
+        await _edit(bot, chat_id, message_id, head_text)
+        message_id = None  # заголовок остаётся отдельным сообщением, пост — новым
+    await send_or_edit_rich(bot, chat_id, pst.blocks(post), pst.as_html(post), pst.keyboard(post),
+                            edit_message_id=message_id)
+
+
+async def browse_channel(ctx, *, user_id: int, chat_id: int, channel_id: str, offset: int, message_id: int):
+    await show_channel(ctx, user_id=user_id, chat_id=chat_id, channel_id=channel_id, offset=offset,
+                       message_id=message_id)
+
+
 async def follow_channel(ctx, *, user_id: int, chat_id: int, channel_url: str | None = None,
-                         video_id: str | None = None, status_message_id: int):
+                         video_id: str | None = None, channel_id: str | None = None,
+                         status_message_id: int, follow: bool = True):
     bot, sm, s = ctx["bot"], ctx["sessionmaker"], ctx["settings"]
     try:
-        if not channel_url:
-            channel_url = await channel_url_for_video(video_id, s.generic_proxy_url or None)
-        info = await ctx["feeds"].resolve(channel_url)
+        if channel_id:
+            async with sm() as db:
+                ch = await db.get(Channel, channel_id)
+            from app.services.feeds import ChannelInfo
+            info = ChannelInfo(channel_id, ch.title if ch else channel_id)
+        else:
+            if not channel_url:
+                channel_url = await channel_url_for_video(video_id, s.generic_proxy_url or None)
+            info = await ctx["feeds"].resolve(channel_url)
         async with sm() as db:
-            is_new = await sr.follow(db, user_id, info.id, info.title)
-            await db.commit()
-        await poll_channels(ctx, [info.id])
-        async with sm() as db:
-            latest = await sr.latest_for_channel(db, info.id, 5)
-            d = await sr.create_digest(db, user_id, [v.video_id for v, _ in latest])
+            is_new = await sr.follow(db, user_id, info.id, info.title) if follow else False
             await db.commit()
     except FeedError as e:
         await _edit(bot, chat_id, status_message_id, f"❌ {e}")
@@ -125,12 +194,8 @@ async def follow_channel(ctx, *, user_id: int, chat_id: int, channel_url: str | 
         return
     head = ("✅ Слежу за каналом" if is_new else "Вы уже следите за каналом") + f" «{info.title}».\n"
     head += "Новые полноценные видео (без Shorts) будут приходить в ежедневной сводке. /channels — список."
-    if not latest:
-        await _edit(bot, chat_id, status_message_id, head)
-        return
-    text, kb = dg.render(latest, 0, d.id, title="Последние видео канала",
-                         blurbs=await fill_blurbs(ctx, user_id, latest))
-    await _edit(bot, chat_id, status_message_id, head + "\n\n" + text, kb)
+    await show_channel(ctx, user_id=user_id, chat_id=chat_id, channel_id=info.id, message_id=status_message_id,
+                       channel_description=info.description, head_text=head)
 
 
 # ---------- сводка ----------
@@ -159,7 +224,6 @@ async def make_digest(ctx, *, user_id: int, chat_id: int, manual: bool = True,
     since = _aware(ds.cursor) or now - timedelta(days=1)
     async with sm() as db:
         items = await sr.new_videos_for(db, user_id, since)
-        d = await sr.create_digest(db, user_id, [v.video_id for v, _ in items]) if items else None
         ds = await db.get(DigestSettings, user_id)
         ds.cursor = now
         await db.commit()
@@ -171,8 +235,19 @@ async def make_digest(ctx, *, user_id: int, chat_id: int, manual: bool = True,
         return False
     if status_message_id:
         await _edit(bot, chat_id, status_message_id, f"✍️ Смотрю, что внутри {len(items)} новых видео…")
-    text, kb = dg.render(items, 0, d.id, blurbs=await fill_blurbs(ctx, user_id, items))
-    await _send(bot, chat_id, status_message_id, text, kb)
+    lines = await fill_blurbs(ctx, user_id, items)
+    async with sm() as db:
+        post = Post(user_id=user_id, kind="digest", items=[
+            pst.item(v.video_id, v.title, c.title, _aware(v.published_at), blurb=lines.get(v.video_id))
+            for v, c in items], meta={})
+        db.add(post)
+        await db.commit()
+    if status_message_id:
+        try:
+            await bot.delete_message(chat_id, status_message_id)
+        except TelegramBadRequest:
+            pass
+    await send_or_edit_rich(bot, chat_id, pst.blocks(post), pst.as_html(post), pst.keyboard(post))
     return True
 
 

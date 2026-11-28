@@ -70,8 +70,9 @@ def render_channels(channels, page: int):
     text = f"<b>📺 Каналы, за которыми вы следите</b> · {len(channels)}"
     if pages > 1:
         text += f" · стр. {page + 1}/{pages}"
-    text += "\n\nНажмите на канал, чтобы отписаться."
-    rows = [[B(text=f"❌ {c.title[:40]}", callback_data=f"uf:{c.id}:{page}")] for c in chunk]
+    text += "\n\n📺 — последние видео канала, ❌ — отписаться."
+    rows = [[B(text=f"📺 {c.title[:40]}", callback_data=f"chv:{c.id}"),
+             B(text="❌", callback_data=f"uf:{c.id}:{page}")] for c in chunk]
     if pages > 1:
         rows.append([B(text="◀️", callback_data=f"chp:{page - 1}" if page > 0 else "noop"),
                      B(text=f"{page + 1}/{pages}", callback_data="noop"),

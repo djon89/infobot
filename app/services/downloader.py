@@ -172,6 +172,22 @@ class Downloader:
     async def probe(self, video_id: str) -> ProbeResult:
         return await asyncio.to_thread(self._probe_sync, video_id)
 
+    # --- список видео канала (для страниц дальше 15 последних из RSS) ---
+    def _uploads_sync(self, channel_id: str, start: int, count: int) -> list[dict]:
+        url = "https://www.youtube.com/playlist?list=UULF" + channel_id[2:]
+
+        def run(use_proxy):
+            o = {**self._opts(use_proxy), "extract_flat": "in_playlist",
+                 "playlist_items": f"{start + 1}-{start + count}"}
+            with yt_dlp.YoutubeDL(o) as ydl:
+                return ydl.extract_info(url, download=False)
+        info = self._with_fallback(run)[0]
+        return [{"id": e["id"], "title": e.get("title") or e["id"], "duration": int(e["duration"]) if e.get("duration") else None}
+                for e in (info.get("entries") or []) if e and e.get("id")]
+
+    async def uploads(self, channel_id: str, start: int, count: int) -> list[dict]:
+        return await asyncio.to_thread(self._uploads_sync, channel_id, start, count)
+
     # --- download ---
     def _download_sync(self, video_id: str, quality: str, audio: str,
                        on_progress: Callable[[int, int], None] | None) -> DownloadedFile:

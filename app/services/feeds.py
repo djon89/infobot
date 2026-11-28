@@ -40,6 +40,7 @@ def extract_channel_ref(text: str) -> str | None:
 class ChannelInfo:
     id: str
     title: str
+    description: str = ""
 
 
 @dataclass
@@ -59,7 +60,8 @@ def parse_channel_page(html: str) -> ChannelInfo | None:
         return None
     t = re.search(r'<meta property="og:title" content="([^"]*)"', html) or re.search(r"<title>(.*?)( - YouTube)?</title>", html)
     import html as h
-    return ChannelInfo(m.group(1), h.unescape(t.group(1)) if t else m.group(1))
+    d = re.search(r'<meta property="og:description" content="([^"]*)"', html)
+    return ChannelInfo(m.group(1), h.unescape(t.group(1)) if t else m.group(1), h.unescape(d.group(1)) if d else "")
 
 
 def parse_feed(xml_text: str, channel_id: str) -> list[FeedEntry]:

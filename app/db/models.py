@@ -155,3 +155,14 @@ class VideoBlurb(Base):
     video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     description: Mapped[str | None] = mapped_column(Text)
     blurb: Mapped[str | None] = mapped_column(Text)
+
+
+class Post(Base):
+    """Пост со списком видео (сводка или страница канала). Номера видео в нём — для команд /sum_<id>_<n>."""
+    __tablename__ = "posts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # digest | channel
+    items: Mapped[list] = mapped_column(JSON)      # [{id, title, channel, published, duration, cover}]
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

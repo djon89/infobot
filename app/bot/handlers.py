@@ -12,11 +12,12 @@ from app import digest as dg
 from app.db import repo
 from app.db import subs_repo as sr
 from app import limits, render
-from app.db.models import Digest, Video
+from app import posts as pst
+from app.db.models import Digest, Post, Video
 from app.services.summarizer import load_summary
 from app.services.youtube import VideoMeta
 from app.stats import build_stats
-from app.telegram_send import send_article
+from app.telegram_send import send_article, send_or_edit_rich
 from app.services.downloader import AUDIO_DEFAULTS, QUALITY_LABELS
 from app.services.feeds import extract_channel_ref
 from app.services.youtube import extract_video_ids
@@ -94,26 +95,61 @@ async def settings_cb(c: CallbackQuery, settings: Settings, sessionmaker):
 
 # ---------- скачивание ----------
 
-async def _enqueue_download(c: CallbackQuery, settings: Settings, sessionmaker, arq: ArqRedis,
+class Origin:
+    """Откуда пришло действие: кнопка или команда /sum_…, /dl_… — дальше обрабатываются одинаково."""
+
+    def __init__(self, user, chat_id: int, reply, alert, ack):
+        self.user, self.chat_id, self.reply, self.alert, self.ack = user, chat_id, reply, alert, ack
+
+    @classmethod
+    def from_cb(cls, c: CallbackQuery):
+        async def alert(t): await c.answer(t, show_alert=True)
+        async def ack(t): await c.answer(t)
+        return cls(c.from_user, c.message.chat.id, c.message.answer, alert, ack)
+
+    @classmethod
+    def from_msg(cls, m: Message):
+        async def ack(t): pass
+        return cls(m.from_user, m.chat.id, m.answer, m.answer, ack)
+
+
+async def _enqueue_download(o, settings: Settings, sessionmaker, arq: ArqRedis,
                             video_id: str, quality: str, audio: str):
+    if not isinstance(o, Origin):
+        o = Origin.from_cb(o)
     async with sessionmaker() as s:
-        await repo.upsert_user(s, c.from_user)
+        await repo.upsert_user(s, o.user)
         if quality == "d" or audio == "d":
-            us = await repo.get_user_settings(s, c.from_user.id, settings.default_quality, settings.default_audio)
+            us = await repo.get_user_settings(s, o.user.id, settings.default_quality, settings.default_audio)
             quality = us.quality if quality == "d" else quality
             audio = us.audio if audio == "d" else audio
-        if err := await limits.check(s, settings, c.from_user.id, "download"):
+        if err := await limits.check(s, settings, o.user.id, "download"):
             await s.commit()
-            await c.answer(err, show_alert=True)
+            await o.alert(err)
             return
-        job = await repo.create_job(s, c.from_user.id, f"{video_id}:{quality}:{audio}", kind="youtube_video")
+        job = await repo.create_job(s, o.user.id, f"{video_id}:{quality}:{audio}", kind="youtube_video")
         await s.commit()
-    await c.answer("Скачиваю…")
-    status = await c.message.answer(f"⏳ Скачивание в очереди ({QUALITY_LABELS.get(quality, quality)})…")
+    await o.ack("Скачиваю…")
+    status = await o.reply(f"⏳ Скачивание в очереди ({QUALITY_LABELS.get(quality, quality)})…")
     await arq.enqueue_job(
-        "download_video", _queue_name=DOWNLOAD_QUEUE, job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
+        "download_video", _queue_name=DOWNLOAD_QUEUE, job_id=job.id, user_id=o.user.id, chat_id=o.chat_id,
         video_id=video_id, quality=quality, audio=audio, status_message_id=status.message_id,
     )
+
+
+async def _enqueue_summary(o: Origin, settings: Settings, sessionmaker, arq: ArqRedis, vid: str):
+    async with sessionmaker() as s:
+        await repo.upsert_user(s, o.user)
+        if err := await limits.check(s, settings, o.user.id, "summary"):
+            await s.commit()
+            await o.alert(err)
+            return
+        job = await repo.create_job(s, o.user.id, vid)
+        await s.commit()
+    await o.ack("Делаю конспект…")
+    status = await o.reply(f"⏳ Конспект: https://youtu.be/{vid}", disable_web_page_preview=True)
+    await arq.enqueue_job("process_youtube", job_id=job.id, user_id=o.user.id, chat_id=o.chat_id,
+                          video_id=vid, status_message_id=status.message_id, reply_to=status.message_id)
 
 
 @router.callback_query(F.data.startswith("dl:"))
@@ -234,19 +270,72 @@ async def digest_page_cb(c: CallbackQuery, sessionmaker):
 
 @router.callback_query(F.data.startswith("s:"))
 async def summary_cb(c: CallbackQuery, settings: Settings, sessionmaker, arq: ArqRedis):
-    vid = c.data.split(":", 1)[1]
+    await _enqueue_summary(Origin.from_cb(c), settings, sessionmaker, arq, c.data.split(":", 1)[1])
+
+
+# ---------- посты со списком видео: команды, листание, каналы ----------
+
+@router.message(F.text.regexp(r"^/(sum|dl)_\d+_\d+"))
+async def post_command(m: Message, settings: Settings, sessionmaker, arq: ArqRedis):
+    action, pid, n = pst.parse_command(m.text)
+    async with sessionmaker() as s:
+        post = await s.get(Post, pid)
+    if not post or post.user_id != m.from_user.id or not 1 <= n <= len(post.items):
+        await m.answer("Не нашёл это видео — возможно, команда из чужого или старого списка.")
+        return
+    vid = post.items[n - 1]["id"]
+    o = Origin.from_msg(m)
+    if action == "sum":
+        await _enqueue_summary(o, settings, sessionmaker, arq, vid)
+    else:
+        await _enqueue_download(o, settings, sessionmaker, arq, vid, "d", "d")
+
+
+@router.callback_query(F.data.startswith("pg:"))
+async def post_page_cb(c: CallbackQuery, sessionmaker):
+    _, pid, page = c.data.split(":")
+    async with sessionmaker() as s:
+        post = await s.get(Post, int(pid))
+    if not post or post.user_id != c.from_user.id:
+        await c.answer("Список устарел", show_alert=True)
+        return
+    await c.answer()
+    await send_or_edit_rich(c.bot, c.message.chat.id, pst.blocks(post, int(page)), pst.as_html(post, int(page)),
+                            pst.keyboard(post, int(page)), edit_message_id=c.message.message_id)
+
+
+@router.callback_query(F.data.startswith("chb:"))
+async def channel_more_cb(c: CallbackQuery, arq: ArqRedis):
+    _, cid, offset, _pid = c.data.split(":")
+    await c.answer("Загружаю видео…")
+    await arq.enqueue_job("browse_channel", user_id=c.from_user.id, chat_id=c.message.chat.id,
+                          channel_id=cid, offset=int(offset), message_id=c.message.message_id)
+
+
+@router.callback_query(F.data.startswith("chv:"))
+async def channel_view_cb(c: CallbackQuery, arq: ArqRedis):
+    await c.answer("Загружаю видео канала…")
+    await arq.enqueue_job("browse_channel", user_id=c.from_user.id, chat_id=c.message.chat.id,
+                          channel_id=c.data.split(":", 1)[1], offset=0, message_id=None)
+
+
+@router.callback_query(F.data.startswith("fc:"))
+async def follow_from_post_cb(c: CallbackQuery, sessionmaker):
+    _, cid, pid = c.data.split(":")
     async with sessionmaker() as s:
         await repo.upsert_user(s, c.from_user)
-        if err := await limits.check(s, settings, c.from_user.id, "summary"):
-            await s.commit()
-            await c.answer(err, show_alert=True)
-            return
-        job = await repo.create_job(s, c.from_user.id, vid)
+        post = await s.get(Post, int(pid))
+        title = (post.meta or {}).get("channel_title", cid) if post else cid
+        await sr.follow(s, c.from_user.id, cid, title)
+        if post and post.user_id == c.from_user.id:
+            post.meta = {**(post.meta or {}), "followed": True}
         await s.commit()
-    await c.answer("Делаю конспект…")
-    status = await c.message.answer(f"⏳ Конспект: https://youtu.be/{vid}", disable_web_page_preview=True)
-    await arq.enqueue_job("process_youtube", job_id=job.id, user_id=c.from_user.id, chat_id=c.message.chat.id,
-                          video_id=vid, status_message_id=status.message_id, reply_to=status.message_id)
+    await c.answer(f"✅ Слежу за «{title}»")
+    if post:
+        try:
+            await c.message.edit_reply_markup(reply_markup=pst.keyboard(post))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.message(Command("import"))

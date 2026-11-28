@@ -85,10 +85,23 @@ async def ctx():
     await engine.dispose()
 
 
+def _rich(bot):
+    """Блоки последнего rich-сообщения и клавиатура."""
+    a = bot.send_rich_message.await_args
+    return a.kwargs["rich_message"].blocks, a.kwargs["reply_markup"]
+
+
+def _texts(blocks):
+    import json
+    return json.dumps([b.model_dump(mode="json", exclude_none=True, fallback=lambda _: None) for b in blocks], ensure_ascii=False)
+
+
 async def test_follow_then_digest_only_new(ctx):
     await st.follow_channel(ctx, user_id=1, chat_id=1, channel_url="https://www.youtube.com/@x", status_message_id=5)
-    text = ctx["bot"].edit_message_text.await_args.args[0]
-    assert "Слежу за каналом «Канал Тест»" in text and "Второе" in text  # сразу показаны последние видео
+    assert "Слежу за каналом «Канал Тест»" in ctx["bot"].edit_message_text.await_args.args[0]
+    blocks, kb = _rich(ctx["bot"])                   # отдельным постом — последние видео с обложками
+    assert [b.type for b in blocks].count("photo") == 2 and "Второе" in _texts(blocks)
+    assert "/sum_" in _texts(blocks) and "/dl_" in _texts(blocks)
 
     # курсор сводки — момент первой настройки: старые видео в сводку не попадут
     await st.make_digest(ctx, user_id=1, chat_id=1, manual=True, status_message_id=6)
@@ -101,9 +114,10 @@ async def test_follow_then_digest_only_new(ctx):
             ch.checked_at = None  # чтобы сводка перепроверила канал
         await s.commit()
     await st.make_digest(ctx, user_id=1, chat_id=1, manual=True, status_message_id=7)
-    text, kwargs = ctx["bot"].edit_message_text.await_args.args[0], ctx["bot"].edit_message_text.await_args.kwargs
-    assert "Свежак" in text and "1 шт." in text and "Второе" not in text
-    assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "s:vid00000003"
+    blocks, kb = _rich(ctx["bot"])
+    t = _texts(blocks)
+    assert "Свежак" in t and "1 шт." in t and "Второе" not in t
+    assert kb.inline_keyboard[0][0].callback_data == "s:vid00000003"
 
     # повторно — пусто
     await st.make_digest(ctx, user_id=1, chat_id=1, manual=True, status_message_id=8)
@@ -118,15 +132,15 @@ async def test_scheduled_digest_respects_hour(ctx):
         ds.hour = (datetime.now(ZoneInfo("Europe/Moscow")).hour + 1) % 24  # не сейчас
         await s.commit()
     await st.send_due_digests(ctx)
-    ctx["bot"].send_message.assert_not_awaited()
+    ctx["bot"].send_rich_message.assert_not_awaited()
 
     async with ctx["sessionmaker"]() as s:
         (await s.get(DigestSettings, 1)).hour = datetime.now(ZoneInfo("Europe/Moscow")).hour
         await s.commit()
     await st.send_due_digests(ctx)
-    assert "2 шт." in ctx["bot"].send_message.await_args.args[1]
+    assert "2 шт." in _texts(_rich(ctx["bot"])[0])
     await st.send_due_digests(ctx)  # второй раз в тот же день — не шлём
-    assert ctx["bot"].send_message.await_count == 1
+    assert ctx["bot"].send_rich_message.await_count == 1
 
 
 class FakeGoogle:
